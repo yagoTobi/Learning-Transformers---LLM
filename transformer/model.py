@@ -339,6 +339,9 @@ def build_transformer(src_vocab_size: int, tgt_vocab_size: int, src_seq_len: int
     transformer = Transformer(encoder, decoder, src_embed, tgt_embed, src_pos, tgt_pos, projection_layer)
 
     # * Initialise the parameters for faster training and non-random values. Many algos to do so 
+    # * This applies Xavier uniform initialization to the parameter.
+    # * It initialises the values randomly from a uniform distrib. which is dependent on the number of input and output neurons
+    # * It aims to keep the variance of the input and output the same.
     for p in transformer.parameters():
         if p.dim() > 1:
             nn.init.xavier_uniform_(p)

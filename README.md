@@ -1,5 +1,7 @@
 Building a Transformer using PyTorch following Umar Jamil Videos
 
+# Building the Transformer
+
 - Training 
 - Inferencing 
 - Visualising the attention scores
@@ -32,3 +34,4 @@ Opus Books - We're going to choose English to Spanish as I'm Spanish so I can ve
     This allows the model to transform the same input information in different ways for different purposes within the attenion mechanism. 
     Each head will have access to the full sentence but for different interpretations or aspects
     
+# Training the transformer model on Corpus Dictionary Data
