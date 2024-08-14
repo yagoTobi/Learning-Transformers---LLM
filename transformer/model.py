@@ -71,7 +71,7 @@ class LayerNormalization(nn.Module):
     def forward(self,x): # Remember we need to calculate the mean and variance for each layer
         mean = x.mean(dim = -1, keepDim=True)
         std = x.std(dim = -1, keepDim=True) # dim = -1 means the last dimension
-        return self.alpha * (x - mean) / (std + self.eps) + self.bias # Formula for normalisation with parameters
+        return self.alpha * (x - mean) / (torch.sqrt(std**2 + self.eps)) + self.bias # Formula for normalisation with parameters
     
 class FeedForwardBlock(nn.Module):
     # Two linear transformations with a ReLU activation function
@@ -186,5 +186,161 @@ class ResidualConnection(nn.Module):
         # ? Takes the tensor x, then normalises it and applies the sublayer (MHA or FFN), then dropout and then add
         # * So the order is maybe not add & norm, but more norm & add
         return x + self.dropout(sublayer(self.normalisation(x))) 
-    
+  
 # ! So now we have all of the necessary components in order to build the encoder block
+class EncoderBlock(nn.Module):
+    def __init__(self,self_attention_block: MultiHeadAttentionBlock, feed_forward_block: FeedForwardBlock, dropout: float) -> None:
+        super().__init__()
+        self.self_attention_block = self_attention_block
+        self.feed_forward_block = feed_forward_block
+        # * We prepare two skip connections for the encoder with indices 0 and 1 
+        self.residual_connections = nn.ModuleList([ResidualConnection(dropout) for _ in range(2)])
+
+    def forward(self, x, src_mask): # src_mask is the mask for the input of the encoder. I'm a little confused on this
+        # ? So our x is the matrix of the input embeddings and the positional encoder 
+        # ? Our task is to apply it through the residual connection where the multi head attention is the sublayer 
+        # ? Then we apply the feed forward block as the second sublayer
+        x = self.residual_connections[0](x, lambda x:self.self_attention_block(x,x,x,src_mask))
+        x = self.residual_connections[1](x, self.feed_forward_block(x))
+        return x
+    
+# ! From the paper know that the encoder block can be replicated multiple (Nx) times, so let's create an encoder class 
+class Encoder(nn.Module):
+
+    def __init__(self, layers: nn.ModuleList) -> None:
+        # ? So here the layers are expected to be a list of encoder blocks when we define the model
+        # ? We don't explicitly define the layers for flexibility, and scalable. 
+        super().__init__()
+        self.layers = layers
+        self.norm = LayerNormalization()
+
+    def forward(self, x, mask):
+        for layer in self.layers:
+            x = layer(x, mask)
+        return self.norm(x)
+    
+# ! Now we have the encoder, we can build the decoder block
+class DecoderBlock(nn.Module):
+    def __init__(self, self_attention_block: MultiHeadAttentionBlock, cross_attention_block: MultiHeadAttentionBlock, feed_forward_block: FeedForwardBlock, dropout: float) -> None:
+        super().__init__()
+        self.self_attention_block = self_attention_block
+        self.cross_attention_block = cross_attention_block
+        self.feed_forward_block = feed_forward_block
+        # * We prepare three skip connections for the decoder with indices 0, 1 and 2
+        self.residual_connections = nn.ModuleList([ResidualConnection(dropout) for _ in range(3)])
+
+    def forward(self, x, encoder_output, src_mask, tgt_mask):
+        # * x is the input of the decoder
+        # * We require the output of the encoder to apply the cross attention
+        # * src_mask is the mask for the encoder input (English Language)
+        # * tgt_mask is the mask for the decoder input (Spanish Language)
+        x = self.residual_connections[0](x, lambda x: self.self_attention_block(x,x,x, tgt_mask))
+        x = self.residual_connections[1](x, lambda x: self.cross_attention_block(x, encoder_output, encoder_output, src_mask))
+        x = self.residual_connections[2](x, self.feed_forward_block(x))
+        return x
+    
+# ! Now we have the decoder block, we can build the decoder
+class Decoder(nn.Module):
+    def __init__(self, layers: nn.ModuleList) -> None:
+        # ? So here the layers are expected to be a list of decoder blocks when we define the model
+        # ? We don't explicitly define the layers for flexibility, and scalable. 
+        super().__init__()
+        self.layers = layers
+        self.norm = LayerNormalization()
+
+    def forward(self, x, encoder_output, src_mask, tgt_mask):
+        for layer in self.layers:
+            x = layer(x, encoder_output, src_mask, tgt_mask) # Calling the forward method here
+        return self.norm(x) # Apply the normalisation
+    
+
+# ! Last step to build the transformer model is the linear layer and the softmax function
+# ! The purpose is to project the embedding onto the new language layer 
+class ProjectionLayer(nn.Module): # ? Final Section
+    def __init__(self, d_model: int, vocab_size: int) -> None:
+        super().__init__()
+        self.proj = nn.Linear(d_model, vocab_size)
+
+    def forward(self, x):
+        # ? We're taking the embeddings and projecting it into the vocab size
+        # ? - Batch, seq_len, d_model -> Batch, seq_len, vocab_size
+        return torch.log_softmax(self.proj(x), dim=-1) # Log softmax is used for the loss function
+    
+# ! Now we have all the components, we can build the transformer model
+class Transformer(nn.Module):
+
+    def __init__(self, encoder: Encoder, decoder: Decoder, src_embed: InputEmbeddings, tgt_embed: InputEmbeddings, src_pos: PositionalEncoding, tgt_pos: PositionalEncoding, projection_layer: ProjectionLayer) -> None:
+        super().__init__()
+        self.encoder = encoder
+        self.decoder = decoder
+        self.src_embed = src_embed
+        self.tgt_embed = tgt_embed
+        self.src_pos = src_pos
+        self.tgt_pos = tgt_pos
+        self.projection_layer = projection_layer
+
+    # * Step 1: Method to Encode
+    def encode(self, src, src_mask):
+        src = self.src_embed(src) # ? Input embeddings
+        src = self.src_pos(src)   # ? Positional encoding
+        return self.encoder(src, src_mask) # ? Encoder block
+
+    # * Step 2: Method to Decode
+    def decode(self, tgt, encoder_output, src_mask, tgt_mask):
+        tgt = self.tgt_embed(tgt) # ? Output embeddings
+        tgt = self.tgt_pos(tgt)
+        return self.decoder(tgt, encoder_output, src_mask, tgt_mask)
+    
+    # * Step 3: Method to Generate the Output (Project the embeddings)
+    def project(self, x):
+        return self.projection_layer(x)
+    
+# ! We now need a function to build and initialise the transformer model
+# ? We need the vocab size for the src and the target
+# ? Source sequence length and the target sequence length - Could be the same or variable depending on the situation
+def build_transformer(src_vocab_size: int, tgt_vocab_size: int, src_seq_len: int, tgt_seq_len: int, d_model: int = 512, d_ff: int = 2048, h: int = 8, num_layers: int = 6, dropout: float = 0.1) -> Transformer:
+    # ? Step 1: Create the input embeddings
+    src_embed = InputEmbeddings(d_model, src_vocab_size)
+    tgt_embed = InputEmbeddings(d_model, tgt_vocab_size)
+
+    # ? Step 2: Create the positional encodings
+    src_pos = PositionalEncoding(d_model, src_seq_len, dropout)
+    tgt_pos = PositionalEncoding(d_model, tgt_seq_len, dropout)
+
+    # ? Step 3: Create the encoder blocks
+    encoder_blocks = []
+    for _ in range(num_layers):
+        # ? Process the self attention and then the feed forward
+        encoder_self_attention_block = MultiHeadAttentionBlock(d_model, h, dropout)
+        feed_forward_block = FeedForwardBlock(d_model, d_ff, dropout)
+        # ? Place it in a block and then append to the array of objects
+        encoder_block = EncoderBlock(encoder_self_attention_block, feed_forward_block, dropout)
+        encoder_blocks.append(encoder_block)
+    
+    # ? Step 4: Create the decoder blocks
+    decoder_blocks = []
+    for _ in range(num_layers):
+        # ? Process the self attention, cross attention and then the feed forward
+        decoder_self_attention_block = MultiHeadAttentionBlock(d_model, h, dropout)
+        decoder_cross_attention_block = MultiHeadAttentionBlock(d_model, h, dropout)
+        feed_forward_block = FeedForwardBlock(d_model, d_ff, dropout)
+        # ? Place it in a block in the sequential order and then append to the array of objects
+        decoder_block = DecoderBlock(decoder_self_attention_block, decoder_cross_attention_block, feed_forward_block, dropout)
+        decoder_blocks.append(decoder_block)
+
+    # ? Step 5: Create the encoder and decoder
+    encoder = Encoder(nn.ModuleList(encoder_blocks))
+    decoder = Decoder(nn.ModuleList(decoder_blocks))
+
+    # ? Step 6: Create the projection layer to target vocabulary translation 
+    projection_layer = ProjectionLayer(d_model, tgt_vocab_size)
+
+    # ? Step 7: Create the transformer model
+    transformer = Transformer(encoder, decoder, src_embed, tgt_embed, src_pos, tgt_pos, projection_layer)
+
+    # * Initialise the parameters for faster training and non-random values. Many algos to do so 
+    for p in transformer.parameters():
+        if p.dim() > 1:
+            nn.init.xavier_uniform_(p)
+
+    return transformer
