@@ -172,3 +172,19 @@ class MultiHeadAttentionBlock(nn.Module):
 
         # ? Apply the output weight matrix to the concatenated heads
         return self.w_o(x)
+    
+class ResidualConnection(nn.Module):
+    """Implements residual connection with layer norm and dropout in Transformer layers."""
+    def __init__(self, dropout: float) -> None:
+        super().__init__()
+        self.dropout = nn.Dropout(dropout)
+        self.normalisation = LayerNormalization()
+        # Skip connection is between Add & Norm and the previous layer
+
+    def forward(self, x, sublayer):
+        # ? Apply norm, sublayer, dropout, then add the input. Used for attention and feed-forward blocks
+        # ? Takes the tensor x, then normalises it and applies the sublayer (MHA or FFN), then dropout and then add
+        # * So the order is maybe not add & norm, but more norm & add
+        return x + self.dropout(sublayer(self.normalisation(x))) 
+    
+# ! So now we have all of the necessary components in order to build the encoder block
