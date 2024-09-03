@@ -35,3 +35,7 @@ Opus Books - We're going to choose English to Spanish as I'm Spanish so I can ve
     Each head will have access to the full sentence but for different interpretations or aspects
     
 # Training the transformer model on Corpus Dictionary Data
+
+We have our dataset which is the opus books dataset from HF: https://huggingface.co/datasets/Helsinki-NLP/opus_books
+
+And we need to apply the tokeniser. 
